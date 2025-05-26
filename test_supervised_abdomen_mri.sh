@@ -1,15 +1,15 @@
 #!/bin/bash
-# Fixed test script for supervised CoWPro model on abdominal MRI
+# Validation script for supervised CoWPro model - Manual path specification
 GPUID1=0
 export CUDA_VISIBLE_DEVICES=$GPUID1
 
 ####### Shared configs ######
 PROTO_GRID=8 # using 32 / 8 = 4, 4-by-4 prototype pooling window during training
 CPT="supervised_cowpro_test"
-DATASET='CHAOST2'  # Use base dataset name for validation
+DATASET='CHAOST2'
 NWORKER=0
 
-ALL_EV=(0 1 2 3 4) # 5-fold cross validation (0, 1, 2, 3, 4)
+ALL_EV=(0 ) # 5-fold cross validation (0, 1, 2, 3, 4)
 
 ### Use L/R kidney as testing classes
 LABEL_SETS=0 
@@ -28,7 +28,7 @@ SNAPSHOT_INTERVAL=10000 # interval for saving snapshot
 SEED='1234'
 
 ###### Validation configs ######
-SUPP_ID='[4]'  # using the additionally loaded scan as support
+SUPP_ID='[0,1,2,3,4]' # using the additionally loaded scan as support
 
 echo ===================================
 
@@ -43,88 +43,107 @@ do
         mkdir -p $LOGDIR
     fi
 
-    # Updated path to the trained supervised model
-    RELOAD_PATH_PATTERN="./exps_supervised/supervised_cowpro_${LABEL_SETS}/mySSL_supervised_train_CHAOST2_Supervised_lbgroup${LABEL_SETS}_vfold${EVAL_FOLD}_mindist4_CHAOST2_Supervised_sets_${LABEL_SETS}_1shot/*/snapshots/50000.pth"
+    # ===================================================================
+    # MANUAL PATH SPECIFICATION - UPDATE THESE PATHS FOR EACH FOLD
+    # ===================================================================
     
-    echo "Looking for model at: $RELOAD_PATH_PATTERN"
+    case $EVAL_FOLD in
+        0)
+            # FOLD 0 - Update this path to your trained model
+            RELOAD_PATH="E:\Suyash\iterative refinement\cowpro_supervised\exps_supervised\supervised_cowpro_0\mySSL_supervised_train_CHAOST2_Supervised_lbgroup0_vfold0_mindist4_CHAOST2_Supervised_sets_0_1shot\10\snapshots/50000.pth"
+            ;;
+        1)
+            # FOLD 1 - Update this path to your trained model
+            RELOAD_PATH="./exps_supervised/supervised_cowpro_0/mySSL_supervised_train_CHAOST2_Supervised_lbgroup0_vfold1_mindist4_CHAOST2_Supervised_sets_0_1shot/1/snapshots/50000.pth"
+            ;;
+        2)
+            # FOLD 2 - Update this path to your trained model
+            RELOAD_PATH="./exps_supervised/supervised_cowpro_0/mySSL_supervised_train_CHAOST2_Supervised_lbgroup0_vfold2_mindist4_CHAOST2_Supervised_sets_0_1shot/1/snapshots/50000.pth"
+            ;;
+        3)
+            # FOLD 3 - Update this path to your trained model
+            RELOAD_PATH="./exps_supervised/supervised_cowpro_0/mySSL_supervised_train_CHAOST2_Supervised_lbgroup0_vfold3_mindist4_CHAOST2_Supervised_sets_0_1shot/1/snapshots/50000.pth"
+            ;;
+        4)
+            # FOLD 4 - Update this path to your trained model
+            RELOAD_PATH="./exps_supervised/supervised_cowpro_0/mySSL_supervised_train_CHAOST2_Supervised_lbgroup0_vfold4_mindist4_CHAOST2_Supervised_sets_0_1shot/1/snapshots/50000.pth"
+            ;;
+        *)
+            echo "Unknown fold: $EVAL_FOLD"
+            continue
+            ;;
+    esac
     
-    # Check if model exists and get the actual path
-    ACTUAL_RELOAD_PATH=""
-    for path in $RELOAD_PATH_PATTERN; do
-        if [ -f "$path" ]; then
-            ACTUAL_RELOAD_PATH="$path"
-            break
-        fi
-    done
+    # ===================================================================
+    # CHECK IF MODEL EXISTS
+    # ===================================================================
     
-    if [ -n "$ACTUAL_RELOAD_PATH" ] && [ -f "$ACTUAL_RELOAD_PATH" ]; then
-        echo "Using model: $ACTUAL_RELOAD_PATH"
-        
-        # Use the fixed validation script
-        python validation_supervised.py with \
-        'modelname=dlfcn_res101' \
-        'usealign=True' \
-        'optim_type=sgd' \
-        reload_model_path="$ACTUAL_RELOAD_PATH" \
-        num_workers=$NWORKER \
-        scan_per_load=-1 \
-        label_sets=$LABEL_SETS \
-        'use_wce=True' \
-        exp_prefix=$PREFIX \
-        'clsname=grid_proto' \
-        n_steps=$NSTEP \
-        exclude_cls_list=$EXCLU \
-        eval_fold=$EVAL_FOLD \
-        dataset=$DATASET \
-        proto_grid_size=$PROTO_GRID \
-        max_iters_per_load=$MAX_ITER \
-        min_fg_data=1 \
-        seed=$SEED \
-        save_snapshot_every=$SNAPSHOT_INTERVAL \
-        lr_step_gamma=$DECAY \
-        path.log_dir=$LOGDIR \
-        support_idx=$SUPP_ID \
-        val_wsize=2 \
-        z_margin=0
-        
-        echo "Validation completed for fold $EVAL_FOLD"
-        
-    else
-        echo "ERROR: Model not found for fold $EVAL_FOLD"
-        echo "Checked path: $RELOAD_PATH_PATTERN"
+    if [ ! -f "$RELOAD_PATH" ]; then
+        echo "❌ Model file not found for fold $EVAL_FOLD: $RELOAD_PATH"
+        echo "Please update the path in the script for fold $EVAL_FOLD"
         echo ""
-        echo "Please verify that:"
-        echo "1. Training completed successfully for fold $EVAL_FOLD"
-        echo "2. The model was saved at iteration 50000"
-        echo "3. The experiment directory structure matches the expected pattern"
-        echo ""
-        echo "You can check available models with:"
-        echo "find ./exps_supervised -name '*.pth' -type f"
-        
-        # Continue to next fold instead of stopping
         continue
     fi
     
-    echo "----------------------------------------"
+    echo "✅ Found model for fold $EVAL_FOLD: $RELOAD_PATH"
+    
+    # ===================================================================
+    # RUN VALIDATION
+    # ===================================================================
+    
+    python validation_supervised.py with \
+    'modelname=dlfcn_res101' \
+    'usealign=True' \
+    'optim_type=sgd' \
+    reload_model_path="$RELOAD_PATH" \
+    num_workers=$NWORKER \
+    scan_per_load=-1 \
+    label_sets=$LABEL_SETS \
+    'use_wce=True' \
+    exp_prefix=$PREFIX \
+    'clsname=grid_proto' \
+    n_steps=$NSTEP \
+    exclude_cls_list=$EXCLU \
+    eval_fold=$EVAL_FOLD \
+    dataset=$DATASET \
+    proto_grid_size=$PROTO_GRID \
+    max_iters_per_load=$MAX_ITER \
+    min_fg_data=1 \
+    seed=$SEED \
+    save_snapshot_every=$SNAPSHOT_INTERVAL \
+    lr_step_gamma=$DECAY \
+    path.log_dir=$LOGDIR \
+    support_idx=$SUPP_ID \
+    val_wsize=2 \
+    z_margin=0
+
+    VALIDATION_EXIT_CODE=$?
+
+    if [ $VALIDATION_EXIT_CODE -eq 0 ]; then
+        echo "✅ Validation completed successfully for fold $EVAL_FOLD"
+    else
+        echo "❌ Validation failed for fold $EVAL_FOLD (exit code: $VALIDATION_EXIT_CODE)"
+    fi
+    
+    echo "========================================="
 done
 
 echo ""
-echo "Validation completed for all requested folds!"
-echo "Results saved in: $LOGDIR"
+echo "Validation completed for all folds!"
 echo ""
-echo "Summary of what was processed:"
-echo "- Dataset: $DATASET"
-echo "- Label sets: $LABEL_SETS"
-echo "- Excluded classes: $EXCLU"
-echo "- Test folds: ${ALL_EV[@]}"
+echo "📁 Results saved in: $LOGDIR"
 echo ""
-echo "To view results:"
-echo "1. Check Sacred logs in each experiment folder under $LOGDIR"
-echo "2. Look for visualization images in interm_preds folders"
-echo "3. Key metrics to look for in logs:"
-echo "   - 'mar_val_batches_meanDice' for per-class Dice scores"
-echo "   - 'mar_val_batches_classDice' for overall Dice scores"
-echo "   - 'mar_val_batches_classPrec' and 'mar_val_batches_classRec' for precision/recall"
+echo "📊 To analyze results, run:"
+echo "python extract_results.py --results_dir $LOGDIR --output validation_summary.csv --class_analysis"
 echo ""
-echo "Example command to find your results:"
-echo "find $LOGDIR -name 'run.json' -exec grep -l 'mar_val_batches_meanDice' {} \;"
+echo "🔍 Manual path verification:"
+echo "Check that each fold's model path exists before running:"
+echo ""
+echo "Fold 0: ./exps_supervised/supervised_cowpro_0/mySSL_*_vfold0_*/*/snapshots/50000.pth"
+echo "Fold 1: ./exps_supervised/supervised_cowpro_0/mySSL_*_vfold1_*/*/snapshots/50000.pth"
+echo "Fold 2: ./exps_supervised/supervised_cowpro_0/mySSL_*_vfold2_*/*/snapshots/50000.pth"
+echo "Fold 3: ./exps_supervised/supervised_cowpro_0/mySSL_*_vfold3_*/*/snapshots/50000.pth"
+echo "Fold 4: ./exps_supervised/supervised_cowpro_0/mySSL_*_vfold4_*/*/snapshots/50000.pth"
+echo ""
+echo "💡 To find your actual paths, use:"
+echo "find ./exps_supervised -name '*.pth' -path '*/snapshots/*' | sort"
