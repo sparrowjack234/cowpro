@@ -24,24 +24,31 @@ import dataloaders.image_transforms as myit
 
 from skimage import segmentation, color
 from skimage.filters import sobel
-from skimage.future import graph
+from skimage import graph
 import cv2
 import matplotlib.pyplot as plt
 import networkx as nx
+import ast
 
 # from graph_merge import *
+
+class edge:
+    def __init__(self, x,y):
+        self.x = x
+        self.y = y
 
 class SuperpixelDataset(BaseDataset):
     def __init__(self, 
                 which_dataset, 
                 base_dir, 
                 idx_split, 
-                mode, transform_param_limits, 
-                scan_per_load, num_rep = 2, 
+                mode, scan_per_load, transforms = None, transform_param_limits = None, 
+                num_rep = 2, 
                 min_fg = '', nsup = 1, 
                 fix_length = None, tile_z_dim = 3, 
                 exclude_list = [], seg_method = 'ncuts', 
-                superpix_scale = 'SMALL', **kwargs):
+                superpix_scale = 'MIDDLE',
+                dataset_config = None, **kwargs):
         """
         Pseudolabel dataset
         Args:
@@ -65,7 +72,13 @@ class SuperpixelDataset(BaseDataset):
         self.pseu_label_name = DATASET_INFO[which_dataset]['PSEU_LABEL_NAME']
         self.real_label_name = DATASET_INFO[which_dataset]['REAL_LABEL_NAME']
 
+        self.dataset_config = dataset_config[which_dataset]
+       
+
         self.transform_param_limits = transform_param_limits
+        
+
+
         self.is_train = True if mode == 'train' else False
         assert mode == 'train'
         self.fix_length = fix_length
@@ -76,12 +89,14 @@ class SuperpixelDataset(BaseDataset):
         # find scans in the data folder
         self.nsup = nsup
         self.base_dir = base_dir
+        # print(self.base_dir)
         self.img_pids = [ re.findall('\d+', fid)[-1] for fid in glob.glob(self.base_dir + "/image_*.nii.gz") ]
         # print(self.img_pids)
         self.img_pids = CircularList(sorted( self.img_pids, key = lambda x: int(x)))
 
         # experiment configs
-        self.exclude_lbs = exclude_list
+        self.exclude_lbs = ast.literal_eval(exclude_list) if isinstance(exclude_list, str) else exclude_list
+        # print(self.exclude_lbs)
         self.superpix_scale = superpix_scale
         if len(exclude_list) > 0:
             print(f'###### Dataset: the following classes has been excluded {exclude_list}######')
@@ -125,7 +140,7 @@ class SuperpixelDataset(BaseDataset):
 
         self.elastic = myit.ElasticTransform(self.alpha, self.sigma)
 
-        self.seg_method = seg_method
+        self.sup_max_cls = 0
 
 
     def get_scanids(self, mode, idx_split):
@@ -167,10 +182,14 @@ class SuperpixelDataset(BaseDataset):
             curr_dict = {}
 
             _img_fid = os.path.join(self.base_dir, f'image_{curr_id}.nii.gz')
-            # _lb_fid  = os.path.join(self.base_dir, f'superpix-{self.superpix_scale}_{curr_id}.nii.gz')
+            ####### comment out for agun model ########
+            _lb_fid  = os.path.join(self.base_dir, f'superpix-{self.superpix_scale}_{curr_id}.nii.gz')
+            ##########################################
 
             curr_dict["img_fid"] = _img_fid
-            # curr_dict["lbs_fid"] = _lb_fid
+            ######## comment out for agun model #######
+            curr_dict["lbs_fid"] = _lb_fid
+            ###########################################
             out_list[str(curr_id)] = curr_dict
         return out_list
 
@@ -190,21 +209,23 @@ class SuperpixelDataset(BaseDataset):
                 continue
 
             img, _info = read_nii_bysitk(itm["img_fid"], peel_info = True) # get the meta information out
+            # print(img.shape)
             img = img.transpose(1,2,0)
             # print(img.shape)
             self.info_by_scan[scan_id] = _info
 
             img = np.float32(img)
-            img = self.norm_func(img)
+            img, mean, std  = self.norm_func(img)
 
             self.scan_z_idx[scan_id] = [-1 for _ in range(img.shape[-1])]
-
-            # lb = read_nii_bysitk(itm["lbs_fid"])
-            # lb = lb.transpose(1,2,0)
-            # lb = np.int32(lb)
+            ######## comment out for agun model #########
+            lb = read_nii_bysitk(itm["lbs_fid"])
+            lb = lb.transpose(1,2,0)
+            lb = np.int32(lb)
+            #############################################
 
             img = img[:256, :256, :]
-            # lb = lb[:256, :256, :]
+            lb = lb[:256, :256, :]
 
             # format of slices: [axial_H x axial_W x Z]
 
@@ -213,8 +234,10 @@ class SuperpixelDataset(BaseDataset):
 
             # re-organize 3D images into 2D slices and record essential information for each slice
             out_list.append( {"img": img[..., 0: 1],
-                           # "lb":lb[..., 0: 0 + 1],
-                           # "sup_max_cls": lb[..., 0: 0 + 1].max(),
+                           "lb":lb[..., 0: 0 + 1],
+                           "mean":mean,
+                           "std":std,
+                           "sup_max_cls": lb[..., 0: 0 + 1].max(),
                            "is_start": True,
                            "is_end": False,
                            "nframe": img.shape[-1],
@@ -226,10 +249,12 @@ class SuperpixelDataset(BaseDataset):
 
             for ii in range(1, img.shape[-1] - 1):
                 out_list.append( {"img": img[..., ii: ii + 1],
-                           # "lb":lb[..., ii: ii + 1],
+                           "lb":lb[..., ii: ii + 1],
+                           "mean":mean,
+                           "std":std,
                            "is_start": False,
                            "is_end": False,
-                           # "sup_max_cls": lb[..., ii: ii + 1].max(),
+                           "sup_max_cls": lb[..., ii: ii + 1].max(),
                            "nframe": -1,
                            "scan_id": scan_id,
                            "z_id": ii
@@ -239,10 +264,12 @@ class SuperpixelDataset(BaseDataset):
 
             ii += 1 # last slice of a 3D volume
             out_list.append( {"img": img[..., ii: ii + 1],
-                           # "lb":lb[..., ii: ii+ 1],
+                           "lb":lb[..., ii: ii+ 1],
+                           "mean":mean,
+                           "std":std,
                            "is_start": False,
                            "is_end": True,
-                           # "sup_max_cls": lb[..., ii: ii + 1].max(),
+                           "sup_max_cls": lb[..., ii: ii + 1].max(),
                            "nframe": -1,
                            "scan_id": scan_id,
                            "z_id": ii
@@ -263,29 +290,13 @@ class SuperpixelDataset(BaseDataset):
             cls_map =  json.load( fopen)
             fopen.close()
 
-        with open(   os.path.join(self.base_dir, 'classmap_1.json') , 'r' ) as fopen:
+        with open(   os.path.join(self.base_dir, 'classmap_100.json') , 'r' ) as fopen:
             self.tp1_cls_map =  json.load( fopen)
             fopen.close()
 
         return cls_map
 
-    def cut_thresh(self,g, labels1, thresh):
-        g_ = g.copy()
-        # Because deleting edges while iterating through them produces an error.
-        to_remove = [(x, y) for x, y, d in g_.edges(data=True) if abs(g_.nodes[x]['mean color'][0] - g_.nodes[y]['mean color'][0]) >= thresh]
-        g_.remove_edges_from(to_remove)
-        comps = nx.connected_components(g_)
-        # # We construct an array which can map old labels to the new ones.
-        # # All the labels within a connected component are assigned to a single label in the output.
-        map_array = np.arange(labels1.max() + 1, dtype=labels1.dtype)
-        for i, nodes in enumerate(comps):
-            for node in nodes:
-                for label in g_.nodes[node]['labels']:
-                    map_array[label] = i
-        labels2 = map_array[labels1].copy()
-        return labels2
-
-    def supcls_pick_binarize(self, image_t): #super_map, sup_max_cls, bi_val = None):
+    def supcls_pick_binarize(self, super_map, sup_max_cls, bi_val = None): # 
         """
         pick up a certain super-pixel class or multiple classes, and binarize it into segmentation target
         Args:
@@ -294,74 +305,12 @@ class SuperpixelDataset(BaseDataset):
             sup_max_cls:    max index of superpixel for avoiding overshooting when selecting superpixel
 
         """
-        # if bi_val == None:
-        #     bi_val = int(torch.randint(low = 1, high = int(sup_max_cls), size = (1,)))
+        possible_values = np.sort(np.unique(super_map))[1:]
+        if bi_val == None:
+            bi_val = random.choice(possible_values) #int(torch.randint(low = 1, high = int(sup_max_cls), size = (1,)))
+        return np.float32(super_map == bi_val)
 
-        # return np.float32(super_map == bi_val)
-
-        dst = cv2.bilateralFilter(image_t[:,:,0],9,75,75)
-        mindst = dst.min()
-        maxdst = dst.max()
-        dst = dst - mindst
-        dst = dst / (maxdst - mindst)
-
-        # fig, ax = plt.subplots(1,4)
-        # ax[0].imshow(image_t[:,:,0], cmap='gray')
-        # ax[0].set_title('Original')
-        # plt.show()
-
-        # labels1 = segmentation.slic(dst, compactness=100, n_segments=1000, start_label=0, sigma = 1.0)
-        labels1 = segmentation.felzenszwalb(dst, scale = 0.01, sigma = 0.1, channel_axis = None)
-        out1 = color.label2rgb(labels1, dst, kind='avg', bg_label=labels1[0,0])
-
-        minout1 = out1.min()
-        maxout1 = out1.max()
-        out1 = out1 - minout1
-        out1 = out1 / (maxout1 - minout1)
-
-        # ax[1].imshow((255*out1).astype('int'), cmap='gray') #, vmin=0, vmax=1)
-        # ax[1].set_title('SLIC Output')
-        # plt.show()
-
-        g = graph.rag_mean_color((255*out1).astype('int'), labels1, mode='similarity', sigma = 127.)
-        # lc = graph.show_rag(labels2, g, (255*dst).astype('int'))
-        # cbar = plt.colorbar(lc)
-
-        labels2 = self.cut_thresh(g, labels1, thresh = 4)
-        bg_label = [labels2[0,0], labels2[0,labels2.shape[1]-1], labels2[labels2.shape[1]-1,0], labels2[labels2.shape[1]-1,labels2.shape[1]-1]]
-        label_choices = [l for l in np.unique(labels2) if l not in bg_label]
-
-        if label_choices == []:
-            # print('REPEAT')
-            labels2 = self.cut_thresh(g, labels1, thresh = 2)
-
-        out2 = color.label2rgb(labels2, dst, kind='avg', bg_label=bg_label[0])
-        minout2 = out2.min()
-        maxout2 = out2.max()
-        out2 = out2 - minout2
-        out2 = out2 / (maxout2 - minout2)
-
-        # ax[2].imshow(out2, cmap='gray')
-        # ax[2].set_title('NCuts output')
-        # plt.show()
-        # print(labels2)
-        random_label = random.choice(np.unique(labels2))
-        
-        while (np.count_nonzero(labels2==random_label) < 255 or np.count_nonzero(labels2==random_label) > int(0.25*256*256)):
-            random_label = random.choice(label_choices)
-
-        label_t = out2[:,:,0]
-
-        label_t[labels2==random_label] = 1.0
-        label_t[labels2!=random_label] = 0.0
-
-        label_t = np.float32(label_t)
-        label_t = cv2.dilate(label_t, kernel = np.ones((5,5),np.uint8), iterations = 3)
-        # ax[3].imshow(label_t, cmap='gray', vmin=0,vmax=1)
-        # ax[3].set_title('Final Label')
-        # plt.show()
-
-        return label_t
+        ################################################
 
 
     def gamma_transform(self, img):
@@ -375,13 +324,75 @@ class SuperpixelDataset(BaseDataset):
             img = irange * np.power(img * 1.0 / irange,  gamma)
             img = img + cmin
 
-        elif gamma_range == False:
+        elif self.gamma_range == False:
             pass
         else:
-            raise ValueError("Cannot identify gamma transform range {}".format(gamma_range))
+            raise ValueError("Cannot identify gamma transform range {}".format(self.gamma_range))
         return img, gamma
 
-    def transform_img_lb(self, comp, c_label, c_img, use_onehot, nclass, **kwargs):
+
+    def random_cutmix(self, img, lb):
+        h = w = 0
+        cx = cy = None
+        for i in range(lb.shape[0]):
+            if lb[i,:,:].sum() > 0:
+                if cx is None:
+                    cx = i
+                h+=1
+            elif cx is not None:
+                break
+
+        for j in range(lb.shape[1]):
+            if lb[:,j,:].sum() > 0:
+                if cy is None:
+                    cy = j
+                w+=1
+            elif cy is not None:
+                break
+
+        # print(cx,cy,h,w)
+
+        if cx is not None and cy is not None and h!=0 and w!=0:
+            dx = int(random.random()*(img.shape[0]-h))
+            dy = int(random.random()*(img.shape[1]-w))
+            tmp = img[dx:dx+h,dy:dy+w]
+            img[cx:cx+h,cy:cy+w] = img[dx:dx+h,dy:dy+w]
+            img[dx:dx+h,dy:dy+w] = tmp
+
+            tmp = lb[dx:dx+h,dy:dy+w]
+            lb[cx:cx+h,cy:cy+w] = lb[dx:dx+h,dy:dy+w]
+            lb[dx:dx+h,dy:dy+w] = tmp
+
+        return img, lb
+
+    def random_erasing(self, img, lb):
+        h = w = 0
+        cx = cy = None
+        for i in range(lb.shape[0]):
+            if lb[i,:,:].sum() > 0:
+                if cx is None:
+                    cx = i
+                h+=1
+            elif cx is not None:
+                break
+
+        for j in range(lb.shape[1]):
+            if lb[:,j,:].sum() > 0:
+                if cy is None:
+                    cy = j
+                w+=1
+            elif cy is not None:
+                break
+
+        # print(cx,cy,h,w)
+
+        if cx is not None and cy is not None and h!=0 and w!=0:
+            img[cx:cx+h,cy:cy+w] = np.zeros_like(img[cx:cx+h,cy:cy+w])
+            lb[cx:cx+h,cy:cy+w] = np.zeros_like(lb[cx:cx+h,cy:cy+w])
+
+        return img, lb
+
+    def transform_img_lb(self, comp, c_label, c_img, use_onehot, nclass, num_rep, **kwargs):
         """
         Args
         comp:               a numpy array with shape [H x W x C + c_label]
@@ -389,8 +400,6 @@ class SuperpixelDataset(BaseDataset):
         nc_onehot:          -1 for not using one-hot representation of mask. otherwise, specify number of classes in the label
 
         """
-        
-
         params = []
 
         comp = copy.deepcopy(comp)
@@ -402,94 +411,97 @@ class SuperpixelDataset(BaseDataset):
         _label = comp[..., c_img ]
         _h_label = np.float32(np.arange( nclass ) == (_label[..., None]) )
         comp = np.concatenate( [comp[...,  :c_img ], _h_label], -1 )
-        
         ########### AFFINE TRANSFOMRATIONS ################
-
         affine_params = self.randomaffine.build_M(comp.shape[:2])
         comp = self.randomaffine(comp, affine_params)
         affine_params = torch.from_numpy(affine_params.flatten())
-
-        ###################################################
-
+        ##################################################
         ########### ELASTIC TRANSFORMATION ###############
-
         comp, dx_params, dy_params = self.elastic(comp)
         dx_params = torch.from_numpy(dx_params.flatten())
         dy_params = torch.from_numpy(dy_params.flatten())
-
         ##################################################
         # comp = geometric_tfx(comp)
         ##################################################
         # round one_hot labels to 0 or 1
-
         t_label_h = comp[..., c_img : ]
         t_label_h = np.rint(t_label_h)
         assert t_label_h.max() <= 1
         t_img = comp[..., 0 : c_img ]
-
         ############## intensity transform ################
-
         t_img, gamma = self.gamma_transform(t_img)
         gamma = torch.Tensor([gamma])
 
         params = torch.cat([affine_params, dx_params, dy_params, gamma])
         ##################################################
+        # if use_onehot is True:
+        #     t_label = t_label_h
+        # else:
+        t_label = np.expand_dims(np.argmax(t_label_h, axis = -1), -1)
 
-        if use_onehot is True:
-            t_label = t_label_h
-        else:
-            t_label = np.expand_dims(np.argmax(t_label_h, axis = -1), -1)
-        return t_img, t_label, params
+        label_remove = False
+
+        return t_img, t_label, params, label_remove
 
 
     def __getitem__(self, index):
         index = index % len(self.actual_dataset)
         # ============ GETS THE IMAGES AND LABELS AND OTHER INFOS ========== #
         curr_dict = self.actual_dataset[index]
-        # sup_max_cls = curr_dict['sup_max_cls']
-        # if sup_max_cls < 1:
-        #     return self.__getitem__(index + 1)
+        sup_max_cls = curr_dict['sup_max_cls']
+        if sup_max_cls < 1:
+            return self.__getitem__(index + 1)
 
         image_t = curr_dict["img"]
-        # label_raw = curr_dict["lb"]
+        label_raw = curr_dict["lb"]
         # print(image_t.shape)
         # ================================================================= #
-
+        # if using setting 2, this slice need to be excluded since it contains label which is supposed to be unseen
+        # if using setting 1, this slice need not be excluded since it contains label which is not suppossed to be unseen
         for _ex_cls in self.exclude_lbs:
-            if curr_dict["z_id"] in self.tp1_cls_map[self.real_label_name[_ex_cls]][curr_dict["scan_id"]]: # if using setting 1, this slice need to be excluded since it contains label which is supposed to be unseen
+            if curr_dict["z_id"] in self.tp1_cls_map[self.real_label_name[_ex_cls]][curr_dict["scan_id"]]:
                 return self.__getitem__(torch.randint(low = 0, high = self.__len__() - 1, size = (1,)))
 
         # =================== KMEANS SUPERPIXEL METHOD ============#
-        try:
-            label_t = self.supcls_pick_binarize(image_t) # label_raw, sup_max_cls)
-        except:
-            return self.__getitem__(index + 1)
+        # try:
+        label_t = self.supcls_pick_binarize(label_raw, sup_max_cls, bi_val = None) #image_t)  #comment out for agun model
+        # except:
+            # return self.__getitem__(torch.randint(low = 0, high = self.__len__() - 1, size = (1,)))
         # plt.imshow(label_t, vmin = 0, vmax = 1.0, cmap = 'gray')
         # plt.title('Label')
         # plt.show()
-        label_t = label_t[:,:,None]
-        
+        ############ comment out for agun model ######
+        # label_t = label_t[:,:,None]
+        ###############################################
         #==========================================================#
 
         pair_buffer = []
 
         comp = np.concatenate( [curr_dict["img"], label_t], axis = -1 )
 
+        support_flag = True
+
         for ii in range(self.num_rep):
             # ============= TRANSFORMATONS ================================ #
-            img, lb, tr_params = self.transform_img_lb(comp, c_img = 1, c_label = 1, nclass = self.nclass,  is_train = True, use_onehot = False)
-
+            # img, lb = self.transforms(comp, c_img = 1, c_label = 1, nclass = self.nclass,  is_train = True, use_onehot = False)
+            ################### comment off for agun model ##########
+            img, lb, tr_params, label_remove = self.transform_img_lb(comp, c_img = 1, c_label = 1, nclass = self.nclass,  is_train = True, use_onehot = False, num_rep = ii)
+            # tr_params = [] #None
             # -----------------------------------------
-            # LOAD PREVIOUS IMAGE FOR TRANSFORMATION TO QUERY
-            comp = np.concatenate([img, lb], axis = -1)
-            # -----------------------------------------
-
+            #########################################################
+            if img.ndim == 2:
+                img = img[:,:,None]
             img = torch.from_numpy( np.transpose( img, (2, 0, 1)) )
+            # print(img.shape)
+            # lb  = torch.from_numpy( lb.transpose((2,0,1)))
             lb  = torch.from_numpy( lb.squeeze(-1))
+            # print(lb.shape)
 
             if self.tile_z_dim:
                 img = img.repeat( [ self.tile_z_dim, 1, 1] )
+                # lb = lb.repeat([self.tile_z_dim, 1, 1])
                 assert img.ndimension() == 3, f'actual dim {img.ndimension()}'
+            # print(img.shape)
 
             is_start = curr_dict["is_start"]
             is_end = curr_dict["is_end"]
@@ -499,6 +511,8 @@ class SuperpixelDataset(BaseDataset):
 
             sample = {"image": img,
                     "label":lb,
+                    "mean":curr_dict["mean"],
+                    "std":curr_dict["std"],
                     "is_start": is_start,
                     "is_end": is_end,
                     "nframe": nframe,
@@ -527,25 +541,31 @@ class SuperpixelDataset(BaseDataset):
         query_labels = []
         query_class = []
 
-        param_labels = []
+        support_params = []
+        query_params = []
 
         for idx, itm in enumerate(pair_buffer):
             if idx % 2 == 0:
                 support_images.append(itm["image"])
                 support_class.append(1) # pseudolabel class
                 support_mask.append(  self.getMaskMedImg( itm["label"], 1, [1]  ))
+                support_params.append(itm['params'])
+
             else:
                 query_images.append(itm["image"])
                 query_class.append(1)
                 query_labels.append(  itm["label"])
-                param_labels.append(itm['params'])
+                query_params.append(itm['params'])
 
         return {'class_ids': [support_class],
             'support_images': [support_images], #
             'support_mask': [support_mask],
             'query_images': query_images, #
             'query_labels': query_labels,
-            'param_labels' : param_labels,
+            'support_params' : support_params,
+            'query_params' : query_params,
+            "mean":curr_dict["mean"],
+            "std":curr_dict["std"]
         }
 
 
@@ -554,6 +574,7 @@ class SuperpixelDataset(BaseDataset):
         copy-paste from basic naive dataset configuration
         """
         if self.fix_length != None:
+            
             assert self.fix_length >= len(self.actual_dataset)
             return self.fix_length
         else:
